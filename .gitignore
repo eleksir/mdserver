@@ -1,4 +1,7 @@
+.idea/**
+.vscode/**
 *.exe
+mdserver
 posts/*.[mM][Dd]
 public/uploads/
-mdserver.yaml
+mdserver.ini

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/gosidekick/goconfig"
+	_ "github.com/gosidekick/goconfig/ini"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -13,20 +15,32 @@ import (
 
 	"github.com/bmizerany/pat"
 	"github.com/russross/blackfriday"
-	"gopkg.in/yaml.v2"
 )
 
 const (
-	configFileName = "mdserver.yaml"
+	configFileName = "mdserver.ini"
 )
 
 // Config - структура для считывания конфигурационного файла
 type Config struct {
-	Listen string `yaml:"listen"`
+	Listen  string `ini:"listen" cfgDefault:"127.0.0.1:3000"`
+	Static  string `ini:"static_dir" cfgDefault:"./public/static"`
+	Uploads string `ini:"upload_dir" cfgDefault:"./public/uploads"`
+}
+
+type post struct {
+	Title   string
+	Body    template.HTML
+	ModTime int64
+}
+
+type postArray struct {
+	Items map[string]post
+	sync.RWMutex
 }
 
 var (
-	// компилируем шаблоны, если не удалось, то выходим
+	// Компилируем шаблоны, если не удалось, то выходим
 	postTemplate  = template.Must(template.ParseFiles(path.Join("templates", "layout.html"), path.Join("templates", "post.html")))
 	errorTemplate = template.Must(template.ParseFiles(path.Join("templates", "layout.html"), path.Join("templates", "error.html")))
 	posts         = newPostArray()
@@ -39,7 +53,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	// для отдачи сервером статичных файлов из папки public/static
+	// Для отдачи сервером статичных файлов из папки public/static
 	fs := noDirListing(http.FileServer(http.Dir("./public/static")))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
@@ -85,7 +99,7 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := postTemplate.ExecuteTemplate(w, "layout", post)
+	err = postTemplate.ExecuteTemplate(w, "layout", post)
 
 	if err != nil {
 		log.Println(err.Error())
@@ -107,12 +121,12 @@ func errorHandler(w http.ResponseWriter, r *http.Request, status int) {
 	}
 }
 
-// обертка для http.FileServer, чтобы она не выдавала список файлов
+// Обёртка для http.FileServer, чтобы она не выдавала список файлов
 // например, если открыть http://127.0.0.1:3000/static/,
 // то будет видно список файлов внутри каталога.
 // noDirListing - вернет 404 ошибку в этом случае.
 func noDirListing(h http.Handler) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/") || r.URL.Path == "" {
 			http.NotFound(w, r)
 
@@ -120,36 +134,19 @@ func noDirListing(h http.Handler) http.HandlerFunc {
 		}
 
 		h.ServeHTTP(w, r)
-	})
+	}
 }
 
-func readConfig(ConfigName string) (conf *Config, err error) {
-	var file []byte
-
-	file, err = ioutil.ReadFile(ConfigName)
+func readConfig(configName string) (conf *Config, err error) {
+	var cfg Config
+	goconfig.File = configName
+	err = goconfig.Parse(&cfg)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = yaml.Unmarshal(file, conf)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return conf, nil
-}
-
-type post struct {
-	Title   string
-	Body    template.HTML
-	ModTime int64
-}
-
-type postArray struct {
-	Items map[string]post
-	sync.RWMutex
+	return &cfg, nil
 }
 
 func newPostArray() *postArray {
@@ -184,12 +181,13 @@ func (p *postArray) Get(md string) (post, int, error) {
 	if !ok || (ok && val.ModTime != info.ModTime().UnixNano()) {
 		p.RLock()
 		defer p.RUnlock()
-		fileread, _ := ioutil.ReadFile(md)
-		lines := strings.Split(string(fileread), "\n")
-		title := string(lines[0])
+		data, _ := ioutil.ReadFile(md)
+		lines := strings.Split(string(data), "\n")
+		title := lines[0]
 		body := strings.Join(lines[1:], "\n")
 		body = string(blackfriday.MarkdownCommon([]byte(body)))
-		p.Items[md] = post{title, template.HTML(body), info.ModTime().UnixNano()}
+		var tmpl = template.HTML(body)
+		p.Items[md] = post{title, tmpl, info.ModTime().UnixNano()}
 	}
 
 	post := p.Items[md]
